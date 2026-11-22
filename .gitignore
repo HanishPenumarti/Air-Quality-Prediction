@@ -1,0 +1,18 @@
+# Data and trained models: too large for GitHub. See README to download and rebuild.
+data/
+models/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs from long runs
+reports/*_log.txt
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

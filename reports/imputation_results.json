@@ -1,0 +1,83 @@
+{
+  "reconstruction": [
+    {
+      "method": "ffill (causal)",
+      "mae": 21.03182601928711,
+      "coverage": 0.9991967192322327
+    },
+    {
+      "method": "linear interp (uses future)",
+      "mae": 16.60651206970215,
+      "coverage": 0.9954339830042701
+    },
+    {
+      "method": "station-month climatology",
+      "mae": 22.25445556640625,
+      "coverage": 0.9998308882594175
+    },
+    {
+      "method": "same-city neighbours",
+      "mae": 16.475490726482597,
+      "coverage": 0.5645795459349765
+    },
+    {
+      "method": "hybrid: neighbour>ffill>clim",
+      "mae": 16.34394590434594,
+      "coverage": 1.0
+    }
+  ],
+  "downstream": [
+    {
+      "strategy": "native",
+      "val_mae": 24.32330894470215,
+      "val_f1_poor": 0.8461331441293763
+    },
+    {
+      "strategy": "median",
+      "val_mae": 24.44184684753418,
+      "val_f1_poor": 0.8444108761329305
+    },
+    {
+      "strategy": "ffill",
+      "val_mae": 24.50013542175293,
+      "val_f1_poor": 0.8437332553948074
+    },
+    {
+      "strategy": "clim",
+      "val_mae": 24.462486267089844,
+      "val_f1_poor": 0.8459699453551912
+    },
+    {
+      "strategy": "ffill_clim",
+      "val_mae": 24.411182403564453,
+      "val_f1_poor": 0.8442556930511825
+    }
+  ],
+  "downstream_after_daily_hybrid": [
+    {
+      "strategy": "native",
+      "val_mae": 24.48944854736328,
+      "val_f1_poor": 0.8447512054237952
+    },
+    {
+      "strategy": "median",
+      "val_mae": 24.42694664001465,
+      "val_f1_poor": 0.8450621513164334
+    },
+    {
+      "strategy": "ffill",
+      "val_mae": 24.516399383544922,
+      "val_f1_poor": 0.8449239631898845
+    },
+    {
+      "strategy": "clim",
+      "val_mae": 24.432697296142578,
+      "val_f1_poor": 0.8451938136256852
+    },
+    {
+      "strategy": "ffill_clim",
+      "val_mae": 24.4982967376709,
+      "val_f1_poor": 0.8441046001519497
+    }
+  ]
+}
