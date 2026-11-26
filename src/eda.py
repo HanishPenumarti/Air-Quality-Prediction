@@ -8,24 +8,9 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-from config import AQI_CATEGORIES, EXT, FIG, POLLUTANTS, PROC, REPORTS  # noqa: E402
+from config import AQI_CATEGORIES, EXT, FIG, POLLUTANTS, PROC, REPORTS, region_of  # noqa: E402
 from external import DIWALI  # noqa: E402
 from viz import AQI_COLORS, SEQ, SERIES, TEXT2, plt, save  # noqa: E402
-
-REGION = {
-    "Delhi": "North (IGP)", "Uttar Pradesh": "North (IGP)", "Haryana": "North (IGP)",
-    "Punjab": "North (IGP)", "Bihar": "North (IGP)", "Chandigarh": "North (IGP)",
-    "West Bengal": "East", "Jharkhand": "East", "Odisha": "East",
-    "Rajasthan": "West", "Gujarat": "West", "Maharashtra": "West",
-    "Madhya Pradesh": "Central", "Chhattisgarh": "Central",
-    "Karnataka": "South", "Tamil Nadu": "South", "Kerala": "South", "Telangana": "South",
-    "Andhra Pradesh": "South", "Puducherry": "South",
-}
-
-
-def region_of(state):
-    return REGION.get(state, "North-East & Hills")
-
 
 def main():
     d = pd.read_parquet(PROC / "daily.parquet")
@@ -36,7 +21,8 @@ def main():
     s["station_days"] = len(d)
     s["valid_aqi_days"] = int(d.AQI.notna().sum())
     s["stations"] = int(d.station.nunique())
-    s["cities"] = int(d.city.nunique())
+    s["cities"] = int(d[["state", "city"]].drop_duplicates().shape[0])      # (state, city): Aurangabad x2
+    s["city_names"] = int(d.city.nunique())
     s["date_range"] = [str(d.date.min().date()), str(d.date.max().date())]
 
     # 1. network growth -------------------------------------------------------------
@@ -135,9 +121,9 @@ def main():
 
     # 7. class balance -----------------------------------------------------------------
     v = d[d.AQI.notna()]
-    cat_m = pd.crosstab(v.month, v.AQI_cat, normalize="index")[AQI_CATEGORIES] * 100
+    cat_m = pd.crosstab(v.month, v.AQI_cat, normalize="index").reindex(columns=AQI_CATEGORIES, fill_value=0) * 100
     fig, axes = plt.subplots(1, 2, figsize=(12, 3.8), gridspec_kw=dict(width_ratios=[1, 1.4]))
-    tot = v.AQI_cat.value_counts(normalize=True)[AQI_CATEGORIES] * 100
+    tot = v.AQI_cat.value_counts(normalize=True).reindex(AQI_CATEGORIES, fill_value=0) * 100
     axes[0].barh(tot.index, tot.values, color=[AQI_COLORS[c] for c in tot.index], height=0.6)
     for i, val in enumerate(tot.values):
         axes[0].text(val + 0.5, i, f"{val:.1f}%", va="center", fontsize=8, color=TEXT2)
@@ -205,7 +191,7 @@ def main():
         ax.set_ylabel("median Pearson r (daily PM2.5)")
         ax.set_title("Spatial dependence: nearby stations move together")
         save(fig, FIG / "eda_09_spatial_corr.png")
-        s["spatial_corr_by_distance"] = b.round(3).to_dict()
+        s["spatial_corr_daily_pm25_by_distance"] = b.round(3).to_dict()
 
         # station map coloured by mean AQI
         m = d.groupby("station").AQI.mean().to_frame("aqi").join(geo[["lat", "lon"]]).dropna()
@@ -214,7 +200,8 @@ def main():
                         s=28, edgecolor="#fcfcfb", linewidth=0.8)
         fig.colorbar(sc, ax=ax, label="mean AQI", shrink=0.7)
         ax.set_aspect("equal")
-        ax.set_title(f"{len(m)} stations, mean AQI (city-level coordinates)")
+        src = geo.coord_source.value_counts().to_dict() if "coord_source" in geo else {}
+        ax.set_title(f"{len(m)} stations, mean AQI ({src.get('openaq_station', 0)} at station coordinates)")
         ax.set_xlabel("longitude")
         ax.set_ylabel("latitude")
         save(fig, FIG / "eda_10_station_map.png")
@@ -239,7 +226,7 @@ def main():
     ax.set_ylabel("PM2.5 / pre-Diwali baseline")
     ax.set_title("Diwali firecracker spike, North India (median & IQR over years)")
     save(fig, FIG / "eda_11_diwali.png")
-    s["diwali_day_plus1_ratio_median"] = round(float(rel.loc[1].median()), 2)
+    s["diwali_north_pm25_day_plus1_vs_days_m10_to_m4_median_ratio"] = round(float(rel.loc[1].median()), 2)
 
     # 11. QA summary ---------------------------------------------------------------------
     qa = pd.read_csv(PROC / "qa_log.csv")
@@ -255,6 +242,29 @@ def main():
     ax.legend()
     save(fig, FIG / "eda_12_qa_removed.png")
     s["qa_removed_by_rule"] = qa.groupby("rule").n_removed.sum().to_dict()
+
+    # 12. QA impact: does cleaning remove genuine episodes? ----------------------------------
+    if "AQI_noqa" in d:
+        dd = d[d.AQI.notna() | d.AQI_noqa.notna()].copy()
+        dw = pd.to_datetime(DIWALI)
+        near = np.min(np.abs(np.stack([(dd.date - x).dt.days.values for x in dw])), axis=0) <= 2
+        rows = []
+        for lab, m in [("all days", np.ones(len(dd), bool)), ("Diwali +/-2 days", near)]:
+            x = dd[m]
+            rows.append({"days": lab, "station_days": len(x),
+                         "severe_with_QA": int((x.AQI > 400).sum()), "severe_without_QA": int((x.AQI_noqa > 400).sum()),
+                         "poor_plus_with_QA": int((x.AQI > 200).sum()),
+                         "poor_plus_without_QA": int((x.AQI_noqa > 200).sum()),
+                         "aqi_valid_with_QA": int(x.AQI.notna().sum()), "aqi_valid_without_QA": int(x.AQI_noqa.notna().sum()),
+                         "category_changed_pct": round(100 * float((x.AQI_cat.astype(str) !=
+                                                                    pd.cut(x.AQI_noqa, [0, 50, 100, 200, 300, 400, 1e4],
+                                                                           labels=AQI_CATEGORIES, include_lowest=True)
+                                                                    .astype(str))[x.AQI.notna() & x.AQI_noqa.notna()].mean()), 2),
+                         **{f"{r}_removed_per_station_day": round(float(x[f"qa_{r}_n"].mean()), 4)
+                            for r in ["spike", "stuck", "out_of_range", "pm25_gt_pm10"] if f"qa_{r}_n" in x}})
+        qi = pd.DataFrame(rows)
+        qi.to_csv(REPORTS / "qa_impact.csv", index=False)
+        s["qa_impact"] = qi.to_dict("records")
 
     (REPORTS / "eda_summary.json").write_text(json.dumps(s, indent=2, default=str))
     print(json.dumps(s, indent=2, default=str))

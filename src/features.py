@@ -1,19 +1,31 @@
-"""Step 5 - build the forecasting feature matrix.
+"""Step 3 - build the forecasting feature matrix (issue-time features only).
 
 Forecast set-up
 ---------------
   * one row = (station s, issue day D). The forecast is issued at 24:00 IST of day D.
-  * target   = official CPCB AQI of day D+1   (regression)
+  * target   = AQI of day D+1 computed with the CPCB breakpoints (regression)
                AQI(D+1) > 200  "Poor or worse" (classification)
-  * every feature uses information up to and including day D only, EXCEPT calendar
-    features of D+1 (known in advance).
-  * weather = OBSERVED on-site CPCB sensors up to day D (available live at issue time).
-    Weather of the target day D+1 is never used: it would be observed future weather (leakage).
+  * every feature uses information available by 24:00 of D, EXCEPT calendar features of D+1
+    (known in advance).
+  * weather = OBSERVED on-site CPCB sensors up to day D. Weather of the target day is never used.
 
-All lags are calendar-day lags (series re-indexed onto a complete daily grid per station),
-and all rolling windows end at D (window [D-k+1, D]) - never at D+1.
+What this script does NOT do: nothing here is fitted on a training period. Statistics that need a
+training period (station x month climatology fallbacks, the `clim_aqi_month` feature) are fitted
+per fold / per hold-out by prep.Imputer, so the walk-forward folds, the final model and the
+spatial hold-outs each use only their own training data.
 
-Output: data/processed/features.parquet  + data/processed/feature_groups.json
+Missing history is filled causally on the COMPLETE daily calendar grid of each station
+(`causal_fill`): (1) mean of OTHER stations in the same (state, city) on the same day, then
+(2) forward-fill of at most 3 calendar days. Remaining gaps stay NaN for prep.Imputer.
+Raw-missingness flags (isna_*) are taken BEFORE any fill.
+
+All features are row-wise functions of data up to D, so the same station-day gets the same
+features whether or not its next-day target is known (training rows == UI rows).
+
+Outputs: data/processed/features_full.parquet (every station-day on the grid; used by the UI),
+features.parquet (rows whose target AQI(D+1) is known; used for modelling),
+feature_groups.json, grid.parquet (raw inputs for re-computing spatial features in hold-outs),
+reports/coverage.csv
 """
 import json
 import sys
@@ -23,8 +35,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-from config import EXT, POOR_THRESHOLD, PROC, TRAIN_END  # noqa: E402
-from eda import region_of  # noqa: E402
+from aqi import is_poor  # noqa: E402
+from config import EXT, FIRMS_LATENCY_H, PROC, REPORTS, city_key, region_of  # noqa: E402
 from external import DIWALI  # noqa: E402
 
 POLL_L0 = ["PM25_mean", "PM10_mean", "NO2_mean", "SO2_mean", "CO_8h", "O3_8h", "NH3_mean",
@@ -32,11 +44,18 @@ POLL_L0 = ["PM25_mean", "PM10_mean", "NO2_mean", "SO2_mean", "CO_8h", "O3_8h", "
 INTRADAY = ["PM25_max", "PM25_eve", "PM10_max", "PM10_eve", "NO2_eve", "CO_eve"]
 SITE = ["site_WS", "site_RH", "site_AT", "site_SR", "site_BP", "site_RF"]
 LOCKDOWN = ("2020-03-25", "2020-05-31")   # national COVID-19 lockdown phases 1-4
+FILL_DAYS = 3
+FOLD_FITTED = ["clim_aqi_month"]          # listed in feature groups, computed by prep.Imputer
+REGIONS = ["Central", "East", "North (IGP)", "North-East & Hills", "South", "West"]
 
 
+# ------------------------------------------------------------------ grid & causal fill
 def complete_grid(d):
+    """One row per station per calendar day between its first and last record."""
+    d = d.copy()
+    d["date"] = pd.to_datetime(d["date"])
     parts = []
-    for st, g in d.groupby("station", sort=False):
+    for st, g in d.groupby("station", sort=True):
         idx = pd.date_range(g.date.min(), g.date.max(), freq="D")
         g = g.set_index("date").reindex(idx)
         g["station"] = st
@@ -44,89 +63,135 @@ def complete_grid(d):
     out = pd.concat(parts, ignore_index=True)
     for c in ["state", "city"]:
         out[c] = out.groupby("station")[c].transform(lambda s: s.ffill().bfill())
-    return out
+    out["city_key"] = [city_key(s, c) for s, c in zip(out.state, out.city)]
+    return out.sort_values(["station", "date"]).reset_index(drop=True)
 
 
-def hybrid_impute(d, cols):
-    """Causal daily-level imputation chosen in the imputation experiment (src/imputation.py):
-    1. mean of OTHER stations in the same city on the same day   (spatial, r~0.90)
-    2. forward-fill within station, at most 3 days                (temporal, past only)
-    3. station x month median from the TRAINING period            (seasonal climatology)
-    Used only to build input features - the target AQI(D+1) is never imputed."""
+def neighbour_mean(d, col, key="city_key", donor=None):
+    """Mean of OTHER stations' raw `col` in the same group on the same day (NaN if none).
+    `donor` (bool array) restricts which rows may contribute (used by spatial hold-outs)."""
+    x = d[col] if donor is None else d[col].where(np.asarray(donor))
+    grp = [d[key], d["date"]]
+    s_ = x.groupby(grp).transform("sum")
+    n_ = x.groupby(grp).transform("count")
+    own = x.notna()
+    return ((s_ - x.fillna(0)) / (n_ - own.astype(int))).replace([np.inf, -np.inf], np.nan), n_ - own.astype(int)
+
+
+def causal_fill(d, cols, how="hybrid", days=FILL_DAYS):
+    """Issue-time imputation of the history used for lag features (d must be a complete grid).
+    how: hybrid (neighbours -> ffill <= `days` calendar days) | neighbour | ffill | none."""
     out = d[cols].copy()
-    trn = d.date <= TRAIN_END
-    month = d.date.dt.month
+    if how == "none":
+        return out
     for c in cols:
-        x = d[c]
-        s_ = x.groupby([d.city, d.date]).transform("sum")
-        n_ = x.groupby([d.city, d.date]).transform("count")
-        neigh = ((s_ - x.fillna(0)) / (n_ - x.notna().astype(int))).replace([np.inf, -np.inf], np.nan)
-        v = x.fillna(neigh)
-        v = v.groupby(d.station).ffill(limit=3)
-        clim = x[trn].groupby([d.station[trn], month[trn]]).median()
-        cl = pd.Series(clim.reindex(list(zip(d.station, month))).values, index=d.index)
-        out[c] = v.fillna(cl)
+        v = d[c]
+        if how in ("hybrid", "neighbour"):
+            v = v.fillna(neighbour_mean(d, c)[0])
+        if how in ("hybrid", "ffill"):
+            v = v.groupby(d.station.values).ffill(limit=days)
+        out[c] = v
     return out
 
 
-def fire_counts(geo):
-    """MODIS fire detections near each station per day (vegetation fires, confidence>=30)."""
+# ------------------------------------------------------------------ spatial features
+def spatial_features(d, donor=None):
+    """Neighbour context on day D (other stations only). `donor` excludes stations from being
+    used as donors (e.g. a held-out city must not feed the training rows of other cities)."""
+    out = pd.DataFrame(index=d.index)
+    out["city_aqi_l0"], n_city = neighbour_mean(d, "AQI", "city_key", donor)
+    out["city_pm25_l0"], _ = neighbour_mean(d, "PM25_mean", "city_key", donor)
+    out["state_aqi_l0"], _ = neighbour_mean(d, "AQI", "state", donor)
+    out["city_nst_l0"] = n_city.astype(float)
+    out["city_aqi_rm3"] = out.city_aqi_l0.groupby(d.station.values).transform(
+        lambda s: s.rolling(3, min_periods=1).mean())
+    out["isna_city_aqi_l0"] = out.city_aqi_l0.isna().astype("int8")
+    return out
+
+
+SPATIAL_COLS = ["city_aqi_l0", "city_pm25_l0", "state_aqi_l0", "city_nst_l0", "city_aqi_rm3", "isna_city_aqi_l0"]
+
+
+# ------------------------------------------------------------------ fires
+def fire_events(f):
+    """FIRMS detections -> the IST calendar day on which each detection is AVAILABLE.
+    acq_date/acq_time are UTC; IST = UTC + 5:30; near-real-time data arrive ~3 h after the
+    overpass, so a 22:30 IST night detection only counts for the NEXT issue day.
+    The archive's `type` field exists only in the standard-quality product (not near-real-time),
+    so it is NOT used; vegetation and static sources are both counted (confidence >= 30)."""
+    f = f.dropna(subset=["latitude", "longitude", "acq_date", "acq_time"])
+    f = f[f.latitude.between(-90, 90) & f.longitude.between(-180, 180)]
+    f = f[pd.to_numeric(f.confidence, errors="coerce") >= 30].copy()
+    at = f.acq_time.astype(int)
+    t_utc = pd.to_datetime(f.acq_date) + pd.to_timedelta(at // 100, unit="h") + pd.to_timedelta(at % 100, unit="m")
+    f["date"] = (t_utc + pd.Timedelta(hours=5.5 + FIRMS_LATENCY_H)).dt.floor("D")
+    return f
+
+
+def fire_counts(geo, f):
+    """Per station and issue day: detections within 100/300 km and FRP within 300 km; plus the
+    regional Punjab + Haryana total. Stations without coordinates get no rows (-> NaN later)."""
     from sklearn.neighbors import BallTree
-    f = pd.read_parquet(EXT / "firms_modis_india.parquet")
-    f = f[(f.confidence >= 30) & (f.type == 0)]
-    f["date"] = pd.to_datetime(f.acq_date)
-    st = geo.dropna(subset=["lat"]).reset_index(drop=True)
-    tree = BallTree(np.radians(st[["lat", "lon"]].values), metric="haversine")
-    R = 6371.0
+    cols = ["station", "date", "fire_300km", "fire_100km", "frp_300km"]
+    st = geo.dropna(subset=["lat", "lon"]).reset_index(drop=True)
     rows = []
-    for _, chunk in f.groupby(f.date.dt.year):
-        X = np.radians(chunk[["latitude", "longitude"]].values)
-        ind, dist = tree.query_radius(X, r=300 / R, return_distance=True)
-        lens = np.array([len(i) for i in ind])
-        rep = np.repeat(np.arange(len(chunk)), lens)
-        if not len(rep):
-            continue
-        pairs = pd.DataFrame({"station": st.station.values[np.concatenate(ind)],
-                              "date": chunk.date.values[rep],
-                              "dist": np.concatenate(dist) * R,
-                              "frp": chunk.frp.values[rep]})
-        pairs["n100"] = pairs.dist <= 100
-        agg = pairs.groupby(["station", "date"]).agg(fire_300km=("dist", "size"), fire_100km=("n100", "sum"),
-                                                     frp_300km=("frp", "sum"))
-        rows.append(agg)
-    fc = pd.concat(rows).groupby(level=[0, 1]).sum().reset_index()
-    # regional stubble-burning signal: all fires in Punjab + Haryana box
+    if len(st) and len(f):
+        tree = BallTree(np.radians(st[["lat", "lon"]].values), metric="haversine")
+        R = 6371.0
+        for _, chunk in f.groupby(f.date.dt.year):
+            ind, dist = tree.query_radius(np.radians(chunk[["latitude", "longitude"]].values),
+                                          r=300 / R, return_distance=True)
+            lens = np.array([len(i) for i in ind])
+            if not lens.sum():
+                continue
+            rep = np.repeat(np.arange(len(chunk)), lens)
+            pairs = pd.DataFrame({"station": st.station.values[np.concatenate(ind)],
+                                  "date": chunk.date.values[rep], "dist": np.concatenate(dist) * R,
+                                  "frp": chunk.frp.values[rep]})
+            pairs["n100"] = pairs.dist <= 100
+            rows.append(pairs.groupby(["station", "date"]).agg(
+                fire_300km=("dist", "size"), fire_100km=("n100", "sum"), frp_300km=("frp", "sum")))
+    fc = (pd.concat(rows).groupby(level=[0, 1]).sum().reset_index() if rows
+          else pd.DataFrame(columns=cols))
     pbhr = f[(f.latitude.between(27.6, 32.5)) & (f.longitude.between(73.8, 77.6))]
     reg = pbhr.groupby("date").size().rename("fire_PB_HR").reset_index()
-    return fc, reg
+    return fc, reg, set(st.station)
 
 
-def main():
-    d = pd.read_parquet(PROC / "daily.parquet")
-    geo = pd.read_csv(EXT / "stations_geo.csv")[["station", "lat", "lon", "elevation"]]
+def load_fires(geo):
+    p = EXT / "firms_modis_india.parquet"
+    if not p.exists():
+        raise SystemExit("data/external/firms_modis_india.parquet missing - run: python src/external.py firms")
+    return fire_counts(geo, fire_events(pd.read_parquet(p)))
+
+
+# ------------------------------------------------------------------ build
+def build(d, geo, fires, fill="hybrid"):
+    """d: daily.parquet frame; geo: stations_geo; fires: output of load_fires/fire_counts.
+    Returns (F, groups) on the complete daily grid (all rows, target may be NaN)."""
     d = complete_grid(d)
-    d = d.sort_values(["station", "date"]).reset_index(drop=True)
-    g = d.groupby("station", sort=False)
-    F = pd.DataFrame({"station": d.station, "city": d.city, "state": d.state, "date": d.date})
-    groups = {}
+    st_ = d.station.values
+    g = d.groupby(st_, sort=False)
+    C, groups = {}, {}
 
     def add(group, name, values):
-        F[name] = values
+        C[name] = np.asarray(values)
         groups.setdefault(group, []).append(name)
 
-    # ---------------- target (D+1) -----------------------------------------------------
-    F["target_date"] = d.date + pd.Timedelta(days=1)
-    F["y_aqi"] = g.AQI.shift(-1)
-    F["y_poor"] = (F.y_aqi > POOR_THRESHOLD).astype("float32").where(F.y_aqi.notna())
-    F["y_pm25"] = g.PM25_mean.shift(-1)          # kept for diagnostics only, never a feature
+    # ---------------- target (D+1) ----------------------------------------------------
+    target_date = d.date + pd.Timedelta(days=1)
+    y = g.AQI.shift(-1)
+    targets = pd.DataFrame({"target_date": target_date, "y_aqi": y,
+                            "y_poor": pd.Series(is_poor(y), index=d.index).astype("float32").where(y.notna()),
+                            "y_pm25": g.PM25_mean.shift(-1)})      # diagnostics only, never a feature
 
     # ---------------- causal imputation of the history used for lag features -----------
-    di = hybrid_impute(d, ["AQI"] + POLL_L0 + INTRADAY)
-    gi = di.groupby(d.station, sort=False)
+    di = causal_fill(d, ["AQI"] + POLL_L0 + INTRADAY, how=fill)
+    gi = di.groupby(st_, sort=False)
     aqi = d.AQI          # raw (for missingness features)
-    aqi_i = di.AQI       # imputed (for lag features)
+    aqi_i = di.AQI       # filled (for lag features)
 
-    # ---------------- target history (AQI lags) ---------------------------------------
+    # ---------------- AQI history -------------------------------------------------------
     for k in range(7):
         add("lag_aqi", f"aqi_l{k}", gi.AQI.shift(k))
     for w in (3, 7, 14, 30):
@@ -134,8 +199,8 @@ def main():
     add("lag_aqi", "aqi_rsd7", gi.AQI.transform(lambda s: s.rolling(7, min_periods=3).std()))
     add("lag_aqi", "aqi_rmax7", gi.AQI.transform(lambda s: s.rolling(7, min_periods=3).max()))
     add("lag_aqi", "aqi_diff1", aqi_i - gi.AQI.shift(1))
-    add("lag_aqi", "poor_days7", (aqi_i > POOR_THRESHOLD).astype(float).where(aqi_i.notna())
-        .groupby(d.station).transform(lambda s: s.rolling(7, min_periods=1).sum()))
+    poor = pd.Series(is_poor(aqi_i), index=d.index).astype(float).where(aqi_i.notna())
+    add("lag_aqi", "poor_days7", poor.groupby(st_).transform(lambda s: s.rolling(7, min_periods=1).sum()))
     add("lag_aqi", "aqi_last_valid", g.AQI.transform(lambda s: s.ffill()))   # last MEASURED AQI
 
     # ---------------- other pollutant lags + intraday shape of day D -------------------
@@ -149,49 +214,47 @@ def main():
         add("lag_poll", f"{c}_l0", di[c])
     add("lag_poll", "pm_ratio_l0", di.PM25_mean / di.PM10_mean)
 
-    # ---------------- missingness / data quality --------------------------------------
+    # ---------------- missingness / data quality (RAW values, before any fill) ---------
     add("missing", "PM25_nh_l0", d.PM25_nh.fillna(0))
     add("missing", "PM10_nh_l0", d.PM10_nh.fillna(0))
     add("missing", "aqi_nsub_l0", d.AQI_n_sub.fillna(0))
     add("missing", "miss_aqi_l0", aqi.isna().astype("int8"))
-    add("missing", "miss_aqi_7d", aqi.isna().astype(float).groupby(d.station)
-        .transform(lambda s: s.rolling(7, min_periods=1).sum()))
-    grp_valid = aqi.notna().groupby(d.station).cumsum()
+    add("missing", "miss_aqi_7d", aqi.isna().astype(float).groupby(st_).transform(lambda s: s.rolling(7, min_periods=1).sum()))
+    grp_valid = aqi.notna().groupby(st_).cumsum()
     days_since = d.groupby([d.station, grp_valid]).cumcount()
     add("missing", "days_since_valid", days_since.where(grp_valid > 0).astype(float))
+    add("missing", "isna_PM25_mean_l0", d.PM25_mean.isna().astype("int8"))
+    add("missing", "isna_PM10_mean_l0", d.PM10_mean.isna().astype("int8"))
+    add("missing", "isna_aqi_l1", aqi.groupby(st_).shift(1).isna().astype("int8"))
 
     # ---------------- spatial neighbours (other stations, same day D) -----------------
-    for key, col, nm in [("city", "AQI", "city_aqi_l0"), ("city", "PM25_mean", "city_pm25_l0"),
-                         ("state", "AQI", "state_aqi_l0")]:
-        s_ = d.groupby([key, "date"])[col].transform("sum")
-        n_ = d.groupby([key, "date"])[col].transform("count")
-        own = d[col].notna().astype(int)
-        add("spatial", nm, ((s_ - d[col].fillna(0)) / (n_ - own)).replace([np.inf, -np.inf], np.nan))
-    add("spatial", "city_nst_l0", d.groupby(["city", "date"]).AQI.transform("count") - aqi.notna().astype(int))
-    add("spatial", "city_aqi_rm3", F.groupby("station").city_aqi_l0
-        .transform(lambda s: s.rolling(3, min_periods=1).mean()))
+    sp = spatial_features(d)
+    for c in SPATIAL_COLS:
+        add("spatial", c, sp[c])
 
-    # ---------------- on-site meteorology (day D) ------------------------------------
+    # ---------------- on-site meteorology (day D, observed) ---------------------------
     for c in SITE:
         add("met_site", f"{c}_l0", d[c])
     add("met_site", "site_WD_sin_l0", np.sin(np.radians(d.site_WD)))
     add("met_site", "site_WD_cos_l0", np.cos(np.radians(d.site_WD)))
+    add("met_site", "isna_site_WS_l0", d.site_WS.isna().astype("int8"))
 
-    # ---------------- fires ----------------------------------------------------------
-    fc, reg = fire_counts(geo)
-    m = F[["station", "date"]].merge(fc, on=["station", "date"], how="left")
+    # ---------------- fires (available by 24:00 IST of D) ------------------------------
+    fc, reg, located = fires
+    key = pd.DataFrame({"station": d.station, "date": d.date})
+    m = key.merge(fc, on=["station", "date"], how="left")
+    known = d.station.isin(located).values
     for c in ["fire_100km", "fire_300km", "frp_300km"]:
-        add("fire", f"{c}_l0", m[c].fillna(0).values)
-    add("fire", "fire_300km_rm3", pd.Series(m.fire_300km.fillna(0).values).groupby(F.station.values)
-        .transform(lambda s: s.rolling(3, min_periods=1).sum()).values)
-    r = F[["date"]].merge(reg, on="date", how="left").fire_PB_HR.fillna(0).values
+        add("fire", f"{c}_l0", np.where(known, m[c].astype(float).fillna(0).values, np.nan))
+    f300 = pd.Series(C["fire_300km_l0"], index=d.index)
+    add("fire", "fire_300km_rm3", f300.groupby(st_).transform(lambda s: s.rolling(3, min_periods=1).sum()))
+    r = key[["date"]].merge(reg, on="date", how="left").fire_PB_HR.astype(float).fillna(0)
+    r.index = d.index
     add("fire", "fire_PB_HR_l0", r)
-    add("fire", "fire_PB_HR_rm7", pd.Series(r).groupby(F.station.values)
-        .transform(lambda s: s.rolling(7, min_periods=1).mean()).values)
-    # fires only observed since FIRMS archive start - before 2010-11 MODIS is still complete
+    add("fire", "fire_PB_HR_rm7", r.groupby(st_).transform(lambda s: s.rolling(7, min_periods=1).mean()))
 
     # ---------------- calendar of target day D+1 (known in advance) -------------------
-    t = F.target_date
+    t = target_date
     doy = t.dt.dayofyear
     add("calendar", "doy_sin", np.sin(2 * np.pi * doy / 365.25))
     add("calendar", "doy_cos", np.cos(2 * np.pi * doy / 365.25))
@@ -206,35 +269,46 @@ def main():
     add("calendar", "lockdown", t.between(*LOCKDOWN).astype("int8"))
 
     # ---------------- static station context ------------------------------------------
-    F = F.merge(geo, on="station", how="left")
+    gm = d[["station"]].merge(geo[["station", "lat", "lon", "elevation"]], on="station", how="left")
     for c in ["lat", "lon", "elevation"]:
-        groups.setdefault("static", []).append(c)
-    regions = sorted({region_of(s) for s in F.state.unique()})
-    add("static", "region_code", F.state.map(region_of).map({r: i for i, r in enumerate(regions)}))
-    # station x month climatology of AQI, computed from TRAINING period only
-    trn = d[d.date <= TRAIN_END]
-    clim_sm = trn.groupby(["station", trn.date.dt.month]).AQI.mean()
-    clim_cm = trn.groupby(["city", trn.date.dt.month]).AQI.mean()
-    clim_rm = trn.assign(region=trn.state.map(region_of)).groupby(["region", trn.date.dt.month]).AQI.mean()
-    mo = F.target_date.dt.month
-    c1 = pd.Series(clim_sm.reindex(list(zip(F.station, mo))).values)
-    c2 = pd.Series(clim_cm.reindex(list(zip(F.city, mo))).values)
-    c3 = pd.Series(clim_rm.reindex(list(zip(F.state.map(region_of), mo))).values)
-    add("static", "clim_aqi_month", c1.fillna(c2).fillna(c3).values)
+        add("static", c, gm[c].values)
+    add("static", "region_code", d.state.map(region_of).map({r_: i for i, r_ in enumerate(REGIONS)}))
+    groups["static"] += FOLD_FITTED      # computed per fold by prep.Imputer
 
-    # ---------------- finalize --------------------------------------------------------
+    ids = pd.DataFrame({"station": d.station, "city": d.city, "state": d.state, "city_key": d.city_key,
+                        "date": d.date})
+    F = pd.concat([ids, targets, pd.DataFrame(C, index=d.index)], axis=1)
     num = F.select_dtypes("float64").columns
     F[num] = F[num].astype("float32")
-    # full grid (incl. days whose next-day AQI is unknown) -> lets the UI forecast any day
-    F[F.aqi_last_valid.notna()].reset_index(drop=True).to_parquet(PROC / "features_full.parquet", index=False)
-    F = F[F.y_aqi.notna()].reset_index(drop=True)
-    F.to_parquet(PROC / "features.parquet", index=False)
+    return F, groups, d
+
+
+def main():
+    d0 = pd.read_parquet(PROC / "daily.parquet")
+    geo = pd.read_csv(EXT / "stations_geo.csv")
+    F, groups, d = build(d0, geo, load_fires(geo))
+    d[["station", "state", "city_key", "date", "AQI", "PM25_mean"]].to_parquet(PROC / "grid.parquet", index=False)
+
+    # every station-day (the UI can forecast any of them) / rows usable for modelling (target known)
+    F_full = F.reset_index(drop=True)
+    F_full.to_parquet(PROC / "features_full.parquet", index=False)
+    Fm = F[F.y_aqi.notna()].reset_index(drop=True)
+    Fm.to_parquet(PROC / "features.parquet", index=False)
     (PROC / "feature_groups.json").write_text(json.dumps(groups, indent=2))
+
+    # coverage: how many station-days survive each stage (prediction vs evaluation availability)
+    cov = pd.DataFrame({"year": F.date.dt.year, "grid": 1, "aqi_today": F.miss_aqi_l0 == 0,
+                        "forecastable": F.aqi_last_valid.notna(), "target_known": F.y_aqi.notna()})
+    cov = cov.groupby("year").sum().astype(int)
+    cov.loc["total"] = cov.sum()
+    cov.to_csv(REPORTS / "coverage.csv")
+
     n_feat = sum(len(v) for v in groups.values())
-    print(f"rows: {len(F):,}   features: {n_feat}")
+    print(f"rows: {len(Fm):,} with a known target, {len(F_full):,} on the station-day grid; features: {n_feat}")
     for k, v in groups.items():
         print(f"  {k:10s} {len(v):3d}")
-    print("Poor-or-worse share:", round(float(F.y_poor.mean()), 3))
+    print("Poor-or-worse share:", round(float(Fm.y_poor.mean()), 3))
+    print(cov.to_string())
 
 
 if __name__ == "__main__":

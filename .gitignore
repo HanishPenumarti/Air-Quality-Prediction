@@ -16,3 +16,11 @@ reports/*_log.txt
 .idea/
 .DS_Store
 Thumbs.db
+
+# Secrets / local keys
+openaq_key.txt
+.env
+
+# Partial (single-model) runs and pytest cache
+reports/partial/
+.pytest_cache/

@@ -1,21 +1,28 @@
-"""Step 7 - benchmark all prescribed models on the same splits and target.
+"""Step 5 - benchmark all prescribed models on the same splits and target.
 
-Models : Persistence & seasonal-climatology baselines, Decision Tree, Random Forest,
-         AdaBoost, Gradient Boosting (sklearn), XGBoost - each on raw features and on
-         PCA components (StandardScaler + PCA fitted on the training period only).
-Tasks  : regression of AQI(D+1); direct classification of AQI(D+1) > 200; and the
-         classification DERIVED from the regression forecast.
-Tuning : walk-forward validation with 2 origins (train<=2019 -> 2020, train<=2020 -> 2021),
-         small grids, on a 40% row subsample of each training window.
-Final  : refit on train+val (<= 2021) with the chosen params; evaluate ONCE on test
-         (2022-01 .. 2023-03). Classification threshold chosen on 2021 (model fitted <= 2020).
-
-Usage: python src/models.py [--only XGBoost ...]
-Outputs: reports/benchmark.csv, benchmark_meta.json, tuning_log.csv, data/processed/preds_test.parquet, models/*.joblib
+Models : persistence & seasonal-climatology baselines, Decision Tree, Random Forest, AdaBoost,
+         Gradient Boosting (sklearn), XGBoost - each on raw features and on PCA components.
+Tasks  : regression of AQI(D+1); direct classification of AQI(D+1) > 200; and the classification
+         DERIVED from the regression forecast (at the fixed 200 rule and at a validation-tuned rule).
+Protocol (identical for every model and both feature kinds):
+  1. screening  : walk-forward folds (train <= 2019 -> validate 2020, train <= 2020 -> validate 2021).
+                  The imputer, class weights and PCA are fitted inside each fold on that fold's
+                  training rows. Grids are screened on a 40 % sample of each fold's training rows
+                  (stratified by station x year). Boosters pick their best round on the
+                  validation year; the score is the mean over the two folds.
+  2. finalist   : the chosen setting is refitted on ALL rows <= 2020 and validated on 2021 ->
+                  number of rounds, classification thresholds (F1) and the validation score that
+                  selects the production model (validation only, never the test set).
+  3. final      : refit on <= 2021 with those settings; evaluated on test 2022-01 .. 2023-03.
+Outputs: reports/benchmark.csv, benchmark_ci.csv, benchmark_meta.json, tuning_log.csv,
+         run_manifest.json, data/processed/preds_test.parquet, models/*.joblib, models/final_params.json,
+         models/thresholds.json, models/production.json
+Usage  : python src/models.py                      full benchmark
+         python src/models.py --only XGBoost       partial run -> written to reports/partial, models/partial
+         python src/models.py --jobs 6             parallel screening jobs for single-threaded models
 """
 import argparse
 import io
-import itertools
 import json
 import sys
 import time
@@ -24,86 +31,32 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 from sklearn.decomposition import PCA
-from sklearn.ensemble import (AdaBoostClassifier, AdaBoostRegressor, GradientBoostingClassifier,
-                              GradientBoostingRegressor, RandomForestClassifier, RandomForestRegressor)
-from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-from sklearn.utils.class_weight import compute_sample_weight
-from xgboost import XGBClassifier, XGBRegressor
 
 sys.path.insert(0, str(Path(__file__).parent))
-from config import FIG, MODELS, POOR_THRESHOLD, PROC, REPORTS, SEED, TRAIN_END, VAL_END  # noqa: E402
-from metrics import best_f1_threshold, cls_metrics, reg_metrics  # noqa: E402
+from config import (FIG, MODELS, PERSIST_MAX_AGE, PROC, REPORTS, SEED, TRAIN_END, TUNE_FOLDS,  # noqa: E402
+                    VAL_END)
+from metrics import (best_f1_threshold, block_bootstrap, cls_metrics_aqi, cls_metrics_prob,  # noqa: E402
+                     reg_metrics)
 from prep import Imputer, load  # noqa: E402
+from runinfo import file_sha256, write_manifest  # noqa: E402
 from viz import SERIES, TEXT2, plt, save  # noqa: E402
+import zoo  # noqa: E402
 
-NJ = 12
-
-# ------------------------------------------------------------------ model zoo
-GRIDS = {
-    "DecisionTree": dict(max_depth=[8, 12, 16], min_samples_leaf=[50, 200]),
-    "RandomForest": dict(max_depth=[16, 24], min_samples_leaf=[10], max_features=[0.33]),
-    "AdaBoost": dict(depth=[6, 9], learning_rate=[0.05, 0.3]),
-    "GradBoost": dict(max_depth=[4, 6], learning_rate=[0.1]),
-    "XGBoost": dict(max_depth=[6, 8], learning_rate=[0.05], min_child_weight=[5, 20]),
-}
+KINDS = ["raw", "pca"]
 
 
-def make(name, task, p, n_pos_w=1.0):
-    reg = task == "reg"
-    if name == "DecisionTree":
-        cls = DecisionTreeRegressor if reg else DecisionTreeClassifier
-        kw = {} if reg else dict(class_weight="balanced")
-        return cls(random_state=SEED, **p, **kw)
-    if name == "RandomForest":
-        cls = RandomForestRegressor if reg else RandomForestClassifier
-        kw = {} if reg else dict(class_weight="balanced_subsample")
-        return cls(n_estimators=150, n_jobs=NJ, random_state=SEED, **p, **kw)
-    if name == "AdaBoost":
-        base = (DecisionTreeRegressor if reg else DecisionTreeClassifier)(max_depth=p["depth"], min_samples_leaf=50)
-        cls = AdaBoostRegressor if reg else AdaBoostClassifier
-        kw = dict(loss="linear") if reg else {}
-        return cls(estimator=base, n_estimators=100, learning_rate=p["learning_rate"], random_state=SEED, **kw)
-    if name == "GradBoost":
-        cls = GradientBoostingRegressor if reg else GradientBoostingClassifier
-        kw = dict(loss="huber") if reg else {}
-        return cls(n_estimators=250, subsample=0.7, max_features=0.5, random_state=SEED,
-                   n_iter_no_change=15, validation_fraction=0.1, **p, **kw)
-    if name == "XGBoost":
-        cls = XGBRegressor if reg else XGBClassifier
-        kw = {} if reg else dict(scale_pos_weight=n_pos_w, eval_metric="aucpr")
-        return cls(n_estimators=800, subsample=0.8, colsample_bytree=0.7, tree_method="hist",
-                   n_jobs=NJ, random_state=SEED, **p, **kw)
-    raise ValueError(name)
-
-
-def fit(model, name, task, X, y, Xv=None, yv=None):
-    """Fit with class balancing where the estimator has no class_weight; XGB early-stops on (Xv,yv)."""
-    kw = {}
-    if task == "cls" and name in ("AdaBoost", "GradBoost"):
-        kw["sample_weight"] = compute_sample_weight("balanced", y)
-    if name == "XGBoost" and Xv is not None:
-        model.set_params(early_stopping_rounds=50)
-        kw.update(eval_set=[(Xv, yv)], verbose=False)
-    est = model.steps[-1][1] if hasattr(model, "steps") else model
-    if name == "XGBoost" and hasattr(model, "steps") and Xv is not None:
-        # pipeline: transform eval set manually
-        pre = make_pipeline(*[s for _, s in model.steps[:-1]]).fit(X)
-        est.fit(pre.transform(X), y, **{k: v for k, v in kw.items() if k != "eval_set"},
-                eval_set=[(pre.transform(Xv), yv)])
-        model.steps[:-1] = pre.steps
-        return model
-    if hasattr(model, "steps"):
-        model.fit(X, y, **{f"{model.steps[-1][0]}__{k}": v for k, v in kw.items()})
-    else:
-        model.fit(X, y, **kw)
-    return model
-
-
-def predict(model, task, X):
-    return model.predict(X) if task == "reg" else model.predict_proba(X)[:, 1]
+def stratified_sample(F, idx, frac, rng):
+    """`frac` of the rows in idx, sampled within every station x year (keeps coverage)."""
+    if frac >= 1:
+        return np.asarray(idx)
+    df = pd.DataFrame({"i": idx, "g": F.station.values[idx] + "_" + F.date.dt.year.values[idx].astype(str),
+                       "r": rng.random(len(idx))}).sort_values(["g", "r"])
+    n = df.groupby("g").g.transform("size").values
+    k = df.groupby("g").cumcount().values
+    return np.sort(df.i.values[k < np.maximum(1, np.round(frac * n))])
 
 
 def model_bytes(model):
@@ -112,160 +65,228 @@ def model_bytes(model):
     return buf.tell()
 
 
-def with_pca(model, n_comp):
-    return make_pipeline(StandardScaler(), PCA(n_components=n_comp, random_state=SEED), model)
+def persistence(F, clim):
+    """Tomorrow = today's MEASURED AQI; if missing, the last measured AQI if at most
+    PERSIST_MAX_AGE days old; otherwise the seasonal climatology (always finite)."""
+    p = F.aqi_l0.where(F.miss_aqi_l0 == 0)
+    p = p.fillna(F.aqi_last_valid.where(F.days_since_valid <= PERSIST_MAX_AGE))
+    return p.fillna(pd.Series(clim, index=F.index)).values.astype(float)
 
 
-# ------------------------------------------------------------------ main
-def main(only=None):
-    tag = ""
-    rng = np.random.default_rng(SEED)
-    F, feats, groups = load()
-    t = F.target_date
-    imp_final = Imputer("ffill_clim", feats).fit(F, (t <= VAL_END).values)
-    X_all = imp_final.transform(F).astype("float32")
-    cols = list(X_all.columns)
-    y_reg = F.y_aqi.values
-    y_cls = F.y_poor.values.astype(int)
-    m_test = (t > VAL_END).values
-    m_trval = ~m_test
+def screen_one(name, task, kind, p, Xtr, ytr, Xva, yva):
+    _, stages, n_best, _ = zoo.fit_eval(name, task, kind, p, Xtr, ytr, Xva, yva)
+    return float(np.min(stages)), n_best
 
-    # walk-forward folds for tuning (imputer refitted per fold on its own training window)
-    folds = []
-    for tr_end, va_end in [("2019-12-31", "2020-12-31"), (TRAIN_END, VAL_END)]:
-        tr = (t <= tr_end).values
-        va = ((t > tr_end) & (t <= va_end)).values
-        Xf = Imputer("ffill_clim", feats).fit(F, tr).transform(F).astype("float32").values
-        sub = np.flatnonzero(tr)
-        sub = rng.choice(sub, int(0.4 * len(sub)), replace=False)
-        folds.append((Xf, sub, np.flatnonzero(va)))
-    print(f"features: {len(cols)}  rows train+val: {m_trval.sum():,}  test: {m_test.sum():,}", flush=True)
 
-    # PCA (fit on training period only) - explained variance
-    sc = StandardScaler().fit(X_all.values[m_trval])
-    pca_full = PCA(random_state=SEED).fit(sc.transform(X_all.values[m_trval]))
-    cum = np.cumsum(pca_full.explained_variance_ratio_)
+def pca_figure(X, mask, ncols):
+    sc = StandardScaler().fit(X[mask])
+    pca = PCA(random_state=SEED).fit(sc.transform(X[mask]))
+    ev = pca.explained_variance_ratio_
+    cum = np.cumsum(ev)
     n95 = int(np.searchsorted(cum, 0.95) + 1)
     fig, ax = plt.subplots(figsize=(7, 3.2))
-    ax.bar(range(1, len(cum) + 1), pca_full.explained_variance_ratio_ * 100, color=SERIES[0], width=0.8,
-           label="per component")
+    ax.bar(range(1, len(cum) + 1), ev * 100, color=SERIES[0], width=0.8, label="per component")
     ax.plot(range(1, len(cum) + 1), cum * 100, color=SERIES[1], label="cumulative")
     ax.axhline(95, color=TEXT2, ls=":", lw=1)
     ax.axvline(n95, color=TEXT2, ls=":", lw=1)
     ax.text(n95 + 1, 50, f"{n95} components\n= 95% variance", fontsize=8, color=TEXT2)
     ax.set_xlabel("principal component")
     ax.set_ylabel("% variance explained")
-    ax.set_title(f"PCA on {len(cols)} standardised features (fit on training period)")
+    ax.set_title(f"PCA on {ncols} standardised features (fit on <= 2021)")
     ax.legend(loc="center right")
-    save(fig, FIG / f"pca_explained_variance{tag}.png")
+    save(fig, FIG / "pca_explained_variance.png")
+    return n95, cum
 
-    # ---- baselines -----------------------------------------------------------------
-    results, preds = [], pd.DataFrame({"station": F.station[m_test].values, "date": F.date[m_test].values,
-                                       "target_date": t[m_test].values, "city": F.city[m_test].values,
-                                       "state": F.state[m_test].values, "y": y_reg[m_test]})
-    persist = F.aqi_l0.where(F.miss_aqi_l0 == 0, F.aqi_last_valid).fillna(F.clim_aqi_month).values
-    seasonal = F.clim_aqi_month.fillna(np.nanmedian(F.clim_aqi_month)).values
+
+# ------------------------------------------------------------------ main
+def main(only=None, jobs=6, screen_frac=0.4):
+    partial = bool(only)
+    out_rep = REPORTS / "partial" if partial else REPORTS
+    out_mod = MODELS / "partial" if partial else MODELS
+    out_rep.mkdir(exist_ok=True, parents=True)
+    out_mod.mkdir(exist_ok=True, parents=True)
+    rng = np.random.default_rng(SEED)
+
+    F, feats, groups = load()
+    t = F.target_date
+    y_reg = F.y_aqi.values.astype(float)
+    y_cls = F.y_poor.values.astype(int)
+    m_test = (t > VAL_END).values
+    m_trval = ~m_test
+    m_tr20 = (t <= TRAIN_END).values
+    m_va21 = ((t > TRAIN_END) & (t <= VAL_END)).values
+
+    imp_final = Imputer("clim", feats).fit(F, m_trval)
+    X_all = imp_final.transform(F).astype("float32")
+    cols = list(X_all.columns)
+    X_all = X_all.values
+    imp20 = Imputer("clim", feats).fit(F, m_tr20)
+    X20 = imp20.transform(F).astype("float32").values          # finalist fit <= 2020, validate 2021
+
+    folds = []
+    for tr_end, va_end in TUNE_FOLDS:
+        tr = (t <= tr_end).values
+        va = ((t > tr_end) & (t <= va_end)).values
+        Xf = Imputer("clim", feats).fit(F, tr).transform(F).astype("float32").values
+        folds.append((Xf, stratified_sample(F, np.flatnonzero(tr), screen_frac, rng), np.flatnonzero(va)))
+    print(f"features: {len(cols)}  rows train+val: {m_trval.sum():,}  test: {m_test.sum():,}", flush=True)
+    n95, cum = pca_figure(X_all, m_trval, len(cols))
+
+    # ---- baselines (fitted with the same cutoffs as the models) ---------------------
+    seasonal = imp_final.target_climatology(F).values.astype(float)
+    persist = persistence(F, seasonal)
+    seasonal20 = imp20.target_climatology(F).values.astype(float)
+    persist20 = persistence(F, seasonal20)
     p_mae = float(np.mean(np.abs(persist[m_test] - y_reg[m_test])))
-    va21 = ((t > TRAIN_END) & (t <= VAL_END)).values
-    for name, p in [("Persistence", persist), ("Seasonal climatology", seasonal)]:
-        r = dict(model=name, features="-", task="regression", **reg_metrics(y_reg[m_test], p[m_test], p_mae))
-        results.append(r)
-        results.append(dict(model=name, features="-", task="derived_cls",
-                            **cls_metrics(y_cls[m_test], p[m_test], POOR_THRESHOLD)))
+    results = []
+    preds = pd.DataFrame({"station": F.station[m_test].values, "date": F.date[m_test].values,
+                          "target_date": t[m_test].values, "city": F.city[m_test].values,
+                          "city_key": F.city_key[m_test].values, "state": F.state[m_test].values,
+                          "y": y_reg[m_test], "y_poor": y_cls[m_test]})
+    thresholds = {}
+    for name, p, p20 in [("Persistence", persist, persist20), ("Seasonal climatology", seasonal, seasonal20)]:
+        thr_aqi = best_f1_threshold(y_cls[m_va21], p20[m_va21], strict=True)
+        results += [dict(model=name, features="-", task="regression", **reg_metrics(y_reg[m_test], p[m_test], p_mae),
+                         val_score=float(np.mean(np.abs(p20[m_va21] - y_reg[m_va21])))),
+                    dict(model=name, features="-", task="derived_cls", **cls_metrics_aqi(y_cls[m_test], p[m_test])),
+                    dict(model=name, features="-", task="derived_cls_tuned",
+                         **cls_metrics_aqi(y_cls[m_test], p[m_test], thr_aqi))]
         preds[f"{name}|reg"] = p[m_test]
+        thresholds[f"{name}|-"] = dict(derived_aqi=thr_aqi)
     print(pd.DataFrame(results)[["model", "task", "MAE", "F1"]], flush=True)
 
     # ---- learned models ----------------------------------------------------------------
-    tuning_log = []
-    names = only or list(GRIDS)
-    for name in names:
+    tuning_log, final_params, val_scores = [], {}, {}
+    for name in (only or zoo.MODEL_NAMES):
         for task in ["reg", "cls"]:
             y = y_reg if task == "reg" else y_cls
-            npw = float((y_cls[m_trval] == 0).sum() / max(1, (y_cls[m_trval] == 1).sum()))
-            # -- tuning (raw features), walk-forward
-            grid = [dict(zip(GRIDS[name], v)) for v in itertools.product(*GRIDS[name].values())]
-            best, best_score = None, np.inf
-            for p in grid:
-                scores = []
-                for Xf, tr_idx, va_idx in folds:
-                    mdl = fit(make(name, task, p, npw), name, task, Xf[tr_idx], y[tr_idx], Xf[va_idx], y[va_idx])
-                    pv = predict(mdl, task, Xf[va_idx])
-                    if task == "reg":
-                        scores.append(np.mean(np.abs(pv - y[va_idx])))
-                    else:
-                        from sklearn.metrics import average_precision_score
-                        scores.append(-average_precision_score(y[va_idx], pv))
-                s = float(np.mean(scores))
-                tuning_log.append(dict(model=name, task=task, params=p, score=s))
-                print(f"  tune {name:12s} {task} {p} -> {s:.4f}", flush=True)
-                if s < best_score:
-                    best, best_score = p, s
+            for kind in KINDS:
+                # 1. screening on the two walk-forward folds
+                gp = zoo.grid(name, task)
+                todo = [(pi, fi) for pi in range(len(gp)) for fi in range(len(folds))]
 
-            for feat_kind in ["raw", "pca"]:
-                Xtr, Xte = X_all.values[m_trval], X_all.values[m_test]
-                base = make(name, task, best, npw)
-                if name == "XGBoost":   # use # rounds found by early stopping on the 2021 fold
-                    probe = fit(make(name, task, best, npw), name, task, *_fold_xy(folds[1], y),
-                                ) if feat_kind == "raw" else None
-                    if probe is not None:
-                        n_best = int(probe.best_iteration + 1)
-                    base.set_params(n_estimators=n_best)
-                model = with_pca(base, n95) if feat_kind == "pca" else base
+                def args(pi, fi):   # slices are created lazily, one job at a time
+                    Xf, tr, va = folds[fi]
+                    return (name, task, kind, gp[pi], Xf[tr], y[tr], Xf[va], y[va])
+                if zoo.THREADS[name] == 1 and jobs > 1:
+                    out = Parallel(n_jobs=jobs)(delayed(screen_one)(*args(pi, fi)) for pi, fi in todo)
+                else:
+                    out = [screen_one(*args(pi, fi)) for pi, fi in todo]
+                sc = {}
+                for (pi, fi), (s, nb) in zip(todo, out):
+                    sc.setdefault(pi, []).append(s)
+                    tuning_log.append(dict(model=name, task=task, features=kind, params=json.dumps(gp[pi]),
+                                           fold=fi + 1, val_score=s, best_rounds=nb))
+                best_pi = min(sc, key=lambda k: np.mean(sc[k]))
+                best = gp[best_pi]
+                print(f"  {name} {task} {kind}: best {best} (mean val score {np.mean(sc[best_pi]):.4f})", flush=True)
 
-                # threshold for classification: fit on <=2020, choose on 2021 (frozen for test)
-                thr = POOR_THRESHOLD
+                # 2. finalist on all rows <= 2020, validated on 2021
+                m20, stages, n_best, pv = zoo.fit_eval(name, task, kind, best, X20[m_tr20], y[m_tr20],
+                                                       X20[m_va21], y[m_va21])
+                vs = float(np.min(stages))
+                val_scores[f"{name}|{task}|{kind}"] = vs
+                thr = {}
                 if task == "cls":
-                    Xf, tr_idx, va_idx = folds[1]
-                    mm = with_pca(make(name, task, best, npw), n95) if feat_kind == "pca" else make(name, task, best, npw)
-                    if name == "XGBoost":
-                        (mm.steps[-1][1] if hasattr(mm, "steps") else mm).set_params(n_estimators=n_best)
-                    mm = fit(mm, name, task, Xf[tr_idx], y[tr_idx])
-                    thr = best_f1_threshold(y[va_idx], predict(mm, task, Xf[va_idx]))
+                    thr["direct"] = best_f1_threshold(y_cls[m_va21], pv)
+                else:
+                    thr["derived_aqi"] = best_f1_threshold(y_cls[m_va21], pv, strict=True)
+                thresholds[f"{name}|{task}|{kind}"] = thr
+                del m20
 
+                # 3. final fit on <= 2021, test
+                t0, c0 = time.perf_counter(), time.process_time()
+                model = zoo.fit_final(name, task, kind, best, X_all[m_trval], y[m_trval], n_rounds=n_best)
+                fit_s, fit_cpu = time.perf_counter() - t0, time.process_time() - c0
                 t0 = time.perf_counter()
-                model = fit(model, name, task, Xtr, y[m_trval])
-                fit_s = time.perf_counter() - t0
-                t0 = time.perf_counter()
-                pt = predict(model, task, Xte)
+                pt = zoo.predict(model, task, X_all[m_test])
                 pred_s = time.perf_counter() - t0
                 size = model_bytes(model)
-                key = f"{name}|{task}|{feat_kind}"
+                key = f"{name}|{task}|{kind}"
                 preds[key] = pt
-                eff = dict(fit_s=fit_s, predict_s=pred_s, predict_ms_per_1k=1000 * pred_s / len(Xte) * 1000,
-                           size_mb=size / 1e6, params=json.dumps(best))
+                eff = dict(fit_s=fit_s, fit_cpu_s=fit_cpu, threads=zoo.THREADS[name], predict_s=pred_s,
+                           predict_ms_per_1k=1e6 * pred_s / m_test.sum(), size_mb=size / 1e6,
+                           params=json.dumps(best), n_rounds=n_best, pca_components=zoo.n_components(model),
+                           val_score=vs, effective_params=zoo.effective_params(model))
                 if task == "reg":
-                    results.append(dict(model=name, features=feat_kind, task="regression",
-                                        **reg_metrics(y_reg[m_test], pt, p_mae), **eff))
-                    results.append(dict(model=name, features=feat_kind, task="derived_cls",
-                                        **cls_metrics(y_cls[m_test], pt, POOR_THRESHOLD)))
+                    results += [dict(model=name, features=kind, task="regression",
+                                     **reg_metrics(y_reg[m_test], pt, p_mae), **eff),
+                                dict(model=name, features=kind, task="derived_cls", **cls_metrics_aqi(y_cls[m_test], pt)),
+                                dict(model=name, features=kind, task="derived_cls_tuned",
+                                     **cls_metrics_aqi(y_cls[m_test], pt, thr["derived_aqi"]))]
+                    msg = f"MAE {results[-3]['MAE']:.2f}"
                 else:
-                    results.append(dict(model=name, features=feat_kind, task="direct_cls",
-                                        **cls_metrics(y_cls[m_test], pt, thr), **eff))
-                joblib.dump(model, MODELS / f"{name}_{task}_{feat_kind}{tag}.joblib", compress=3)
-                last = results[-1] if task == "cls" else results[-2]
-                print(f"{key:32s} " + (f"MAE {last['MAE']:.2f}" if task == "reg" else f"F1 {last['F1']:.3f}")
-                      + f"  fit {fit_s:.0f}s  size {size / 1e6:.1f}MB", flush=True)
+                    results.append(dict(model=name, features=kind, task="direct_cls",
+                                        **cls_metrics_prob(y_cls[m_test], pt, thr["direct"]), **eff))
+                    msg = f"F1 {results[-1]['F1']:.3f}  AP {results[-1]['AP']:.3f}"
+                joblib.dump(model, out_mod / f"{name}_{task}_{kind}.joblib", compress=3)
+                final_params.setdefault(name, {}).setdefault(task, {})[kind] = dict(params=best, n_rounds=n_best)
+                print(f"{key:28s} {msg}  rounds {n_best}  fit {fit_s:.0f}s (cpu {fit_cpu:.0f}s)  "
+                      f"size {size / 1e6:.1f}MB", flush=True)
 
     res = pd.DataFrame(results)
-    res.to_csv(REPORTS / f"benchmark{tag}.csv", index=False)
-    meta = dict(n_features=len(cols), features=cols, pca_n95=n95, pca_cumvar=cum.tolist(),
+    res.to_csv(out_rep / "benchmark.csv", index=False)
+    pd.DataFrame(tuning_log).to_csv(out_rep / "tuning_log.csv", index=False)
+    preds.to_parquet((PROC / "partial_preds_test.parquet") if partial else (PROC / "preds_test.parquet"), index=False)
+    joblib.dump(imp_final, out_mod / "imputer.joblib")
+    (out_mod / "final_params.json").write_text(json.dumps(final_params, indent=1))
+    (out_mod / "thresholds.json").write_text(json.dumps(thresholds, indent=1))
+
+    # production model = best VALIDATION score (2021), never chosen on the test set
+    reg_keys = {k: v for k, v in val_scores.items() if "|reg|" in k}
+    cls_keys = {k: v for k, v in val_scores.items() if "|cls|" in k}
+    prod = dict(regressor=min(reg_keys, key=reg_keys.get) if reg_keys else None,
+                classifier=min(cls_keys, key=cls_keys.get) if cls_keys else None,
+                rule="lowest 2021 validation MAE (regression) / highest 2021 validation AP (classifier), "
+                     "model fitted on <= 2020", validation_scores=val_scores)
+    (out_mod / "production.json").write_text(json.dumps(prod, indent=1))
+
+    ci = confidence_intervals(preds, res)
+    ci.to_csv(out_rep / "benchmark_ci.csv", index=False)
+    meta = dict(n_features=len(cols), features=cols, pca_n95_trainval=n95, pca_cumvar=cum.tolist(),
                 n_trainval=int(m_trval.sum()), n_test=int(m_test.sum()), persistence_mae=p_mae,
-                imputer_median=imp_final.median_.to_dict())
-    (REPORTS / f"benchmark_meta{tag}.json").write_text(json.dumps(meta, indent=1, default=float))
-    pd.DataFrame(tuning_log).to_csv(REPORTS / f"tuning_log{tag}.csv", index=False)
-    preds.to_parquet(PROC / f"preds_test{tag}.parquet", index=False)
-    joblib.dump(imp_final, MODELS / f"imputer{tag}.joblib")
-    show = ["model", "features", "task", "MAE", "RMSE", "R2", "MAE_top5pct", "F1", "PR_AUC", "fit_s"]
+                screen_fraction=screen_frac, production=prod)
+    (out_rep / "benchmark_meta.json").write_text(json.dumps(meta, indent=1, default=float))
+    write_manifest(out_rep / "run_manifest.json", step="models", partial=partial, models=only or zoo.MODEL_NAMES,
+                   cutoffs=dict(train_end=TRAIN_END, val_end=VAL_END, tune_folds=TUNE_FOLDS), seed=SEED,
+                   final_params=final_params, thresholds=thresholds,
+                   data=dict(features_parquet=file_sha256(PROC / "features.parquet"), n_rows=len(F)))
+    show = ["model", "features", "task", "MAE", "RMSE", "MAE_severe", "F1", "AP", "fit_s", "fit_cpu_s"]
     print(res[[c for c in show if c in res]].to_string())
+    print("production:", prod["regressor"], "/", prod["classifier"])
 
 
-def _fold_xy(fold, y):
-    Xf, tr, va = fold
-    return Xf[tr], y[tr], Xf[va], y[va]
+def confidence_intervals(preds, res, B=1000):
+    """95 % paired block-bootstrap intervals (blocks = ISO weeks of the target date) for test MAE,
+    MAE difference vs persistence, and (direct classifiers) F1 and AP."""
+    from sklearn.metrics import average_precision_score, f1_score
+    wk = pd.to_datetime(preds.target_date).dt.strftime("%G-%V").values
+    y, yc = preds.y.values, preds.y_poor.values
+    fns = {}
+    per = preds["Persistence|reg"].values
+    for c in preds.columns:
+        if c.endswith("|reg") or "|reg|" in c:
+            p = preds[c].values
+            fns[f"{c}|MAE"] = lambda i, p=p: np.mean(np.abs(p[i] - y[i]))
+            fns[f"{c}|dMAE_vs_persistence"] = lambda i, p=p: np.mean(np.abs(p[i] - y[i]) - np.abs(per[i] - y[i]))
+        if "|cls|" in c:
+            p = preds[c].values
+            thr = res[(res.model == c.split("|")[0]) & (res.features == c.split("|")[2]) &
+                      (res.task == "direct_cls")].threshold.iloc[0]
+            fns[f"{c}|F1"] = lambda i, p=p, thr=thr: f1_score(yc[i], p[i] >= thr)
+            fns[f"{c}|AP"] = lambda i, p=p: average_precision_score(yc[i], p[i])
+    ci = block_bootstrap(wk, fns, B=B, seed=SEED)
+    rows = []
+    for k, (lo, hi) in ci.items():
+        col, metric = k.rsplit("|", 1)
+        rows.append(dict(prediction=col, metric=metric, value=float(fns[k](np.arange(len(y)))), lo95=lo, hi95=hi))
+    return pd.DataFrame(rows)
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--only", nargs="*")
+    ap.add_argument("--only", nargs="*", choices=zoo.MODEL_NAMES)
+    ap.add_argument("--jobs", type=int, default=6, help="parallel screening jobs for single-threaded models")
+    ap.add_argument("--screen-frac", type=float, default=0.4)
     a = ap.parse_args()
-    main(only=a.only)
+    main(only=a.only, jobs=a.jobs, screen_frac=a.screen_frac)
