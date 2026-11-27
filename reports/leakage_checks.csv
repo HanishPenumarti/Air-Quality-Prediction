@@ -1,0 +1,7 @@
+check,result,detail
+target_alignment,PASS,20000 sampled rows: y_aqi == AQI(D+1)
+no_target_inputs,PASS,forbidden columns among inputs: none
+prefix_invariance,PASS,"Delhi (6 stations), cut 2021-06-30: 0 differing values in 25191 rows x 82 features"
+fold_isolation,PASS,imputer fitted on <= 2019 is unchanged when every later value is altered
+train_ui_identity,PASS,"20000 station-days: raw features equal=True, imputed equal=True"
+firms_timing,PASS,"availability day - IST acquisition day: {0: 177773, 1: 13889}"

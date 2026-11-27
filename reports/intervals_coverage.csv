@@ -1,0 +1,12 @@
+slice,group,coverage,n
+all,all,0.8101220311739948,141849
+season,Monsoon (Jun-Sep),0.8251838183902261,35769
+season,Post-monsoon (Oct),0.7853970876794382,9683
+season,Pre-monsoon (Mar-May),0.8208462332301342,38760
+season,Winter (Nov-Feb),0.7977167444523483,57637
+true category,Good,0.8004818724185406,17432
+true category,Moderate,0.8263593690190785,49637
+true category,Poor,0.6990291262135923,15244
+true category,Satisfactory,0.8504148023862789,42912
+true category,Severe,0.5313668466971334,2407
+true category,Very Poor,0.809945839487937,14217

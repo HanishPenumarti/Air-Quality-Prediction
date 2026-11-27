@@ -18,7 +18,13 @@ NOT_RUN = "_not run yet - run the pipeline (see README)_"
 
 
 def md(df, floatfmt=".3g"):
-    return df.to_markdown(index=False, floatfmt=floatfmt) if len(df) else "_empty_"
+    """Markdown table; '|' inside text cells (e.g. 'XGBoost|reg|raw') is escaped so columns don't split."""
+    if not len(df):
+        return "_empty_"
+    df = df.copy()
+    for c in df.columns[df.dtypes == object]:
+        df[c] = df[c].map(lambda v: v.replace("|", "\\|") if isinstance(v, str) else v)
+    return df.to_markdown(index=False, floatfmt=floatfmt)
 
 
 def read(name):
@@ -54,6 +60,9 @@ def tables():
     ci = read("benchmark_ci.csv")
     if ci is not None:
         T["bench_ci"] = md(ci[ci.metric.isin(["MAE", "dMAE_vs_persistence", "AP", "F1"])], ".2f")
+    pw = read("benchmark_pairwise.csv")
+    if pw is not None:
+        T["bench_pairwise"] = md(pw, ".3f")
     for key, f, fmt in [("severe", "severe.csv", ".3f"), ("intervals", "intervals_coverage.csv", ".3f"),
                         ("backtest", "backtest.csv", ".2f"), ("leakage_checks", "leakage_checks.csv", None),
                         ("leakage_audit", "leakage_audit.csv", None), ("permutation", "permutation_importance.csv", ".3f"),

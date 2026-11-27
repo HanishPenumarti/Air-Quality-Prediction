@@ -41,7 +41,7 @@ python src/run_all.py                    # everything, roughly 15-18 h on 14 cor
 It can also run in stages, for example over two nights:
 
 ```bash
-python src/run_all.py --only clean eda features audit impute models severe       # ~9-11 h
+python src/run_all.py --only clean eda features audit impute models pairwise severe   # ~9-11 h
 python src/run_all.py --only backtest ablation efficiency errors loco tables       # ~6-7 h
 ```
 
@@ -53,6 +53,7 @@ python src/run_all.py --only backtest ablation efficiency errors loco tables    
 | audit | `src/leakage_audit.py` | leakage declarations plus executable checks; **stops the run if a check fails** | 3 min |
 | impute | `src/imputation.py` | imputation comparison (validation year only) | 15 min |
 | models | `src/models.py` | benchmark: 5 models × raw/PCA × regression/classification | 8-10 h |
+| pairwise | `src/pairwise_ci.py` | paired model-vs-model differences with block-bootstrap intervals | 5 min |
 | severe | `src/severe.py` | extreme-day variants, prediction intervals | 15 min |
 | backtest | `src/backtest.py` | rolling-origin test years 2019, 2020, 2021, 2022-23 | 1-1.5 h |
 | ablation | `src/analysis_ablation.py` | Analysis A, all five models, full data | 2.5-3 h |

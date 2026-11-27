@@ -12,6 +12,7 @@ Steps
   audit      src/leakage_audit.py       leakage declarations + executable checks (stops on failure)
   impute     src/imputation.py          imputation comparison (validation year only)
   models     src/models.py              benchmark of all models, raw and PCA
+  pairwise   src/pairwise_ci.py         paired model-vs-model differences with block-bootstrap intervals
   severe     src/severe.py              extreme-day variants + prediction intervals
   backtest   src/backtest.py            rolling-origin backtest 2019..2022-23
   ablation   src/analysis_ablation.py   Analysis A (all five models, validation year)
@@ -30,7 +31,8 @@ from pathlib import Path
 SRC = Path(__file__).parent
 STEPS = [
     ("clean", ["clean.py"]), ("eda", ["eda.py"]), ("features", ["features.py"]), ("audit", ["leakage_audit.py"]),
-    ("impute", ["imputation.py"]), ("models", ["models.py"]), ("severe", ["severe.py"]),
+    ("impute", ["imputation.py"]), ("models", ["models.py"]), ("pairwise", ["pairwise_ci.py"]),
+    ("severe", ["severe.py"]),
     ("backtest", ["backtest.py"]), ("ablation", ["analysis_ablation.py"]), ("efficiency", ["analysis_efficiency.py"]),
     ("errors", ["analysis_errors.py"]), ("loco", ["spatial_cv.py"]), ("tables", ["report_tables.py"]),
 ]

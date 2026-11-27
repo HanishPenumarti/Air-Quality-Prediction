@@ -1,8 +1,9 @@
 {
   "station_days": 595889,
-  "valid_aqi_days": 444322,
+  "valid_aqi_days": 445079,
   "stations": 453,
-  "cities": 241,
+  "cities": 242,
+  "city_names": 241,
   "date_range": [
     "2010-01-01",
     "2023-03-31"
@@ -10,77 +11,109 @@
   "missing_pct_overall": {
     "PM25_mean": 18.9,
     "PM10_mean": 26.1,
-    "NO2_mean": 12.8,
-    "SO2_mean": 16.3,
-    "CO_mean": 17.3,
-    "O3_mean": 18.1,
+    "NO2_mean": 12.7,
+    "SO2_mean": 16.1,
+    "CO_mean": 14.7,
+    "O3_mean": 18.0,
     "NH3_mean": 34.6,
-    "NO_mean": 15.1,
-    "NOx_mean": 14.1,
-    "Benzene_mean": 31.5,
+    "NO_mean": 15.0,
+    "NOx_mean": 13.0,
+    "Benzene_mean": 31.6,
     "Toluene_mean": 44.1
   },
   "pm25_missing_by_city_aqi_cat": {
-    "Good": 24.67,
-    "Satisfactory": 22.08,
-    "Moderate": 23.08,
-    "Poor": 28.37,
-    "Very Poor": 29.63,
-    "Severe": 28.22
+    "Good": 24.4,
+    "Satisfactory": 22.02,
+    "Moderate": 23.03,
+    "Poor": 28.48,
+    "Very Poor": 29.38,
+    "Severe": 28.3
   },
   "aqi_cat_share_pct": {
-    "Good": 11.91,
-    "Satisfactory": 30.46,
-    "Moderate": 33.48,
-    "Poor": 9.97,
-    "Very Poor": 11.18,
-    "Severe": 3.0
+    "Good": 12.5,
+    "Satisfactory": 30.21,
+    "Moderate": 33.28,
+    "Poor": 9.92,
+    "Very Poor": 11.1,
+    "Severe": 2.98
   },
-  "poor_or_worse_pct": 24.15,
+  "poor_or_worse_pct": 24.01,
   "poor_or_worse_pct_by_region": {
-    "Central": 12.2,
-    "East": 19.9,
-    "North (IGP)": 38.9,
-    "North-East & Hills": 14.2,
+    "Central": 12.0,
+    "East": 19.7,
+    "North (IGP)": 38.7,
+    "North-East & Hills": 14.1,
     "South": 2.1,
-    "West": 13.3
+    "West": 13.1
   },
   "aqi_driver_pct_all": {
-    "PM10": 42.0,
-    "PM25": 35.6,
-    "CO": 10.2,
-    "O3": 9.6,
+    "PM10": 42.6,
+    "PM25": 35.4,
+    "CO": 9.8,
+    "O3": 9.5,
     "NO2": 1.8,
     "SO2": 0.8,
     "NH3": 0.0
   },
   "aqi_driver_pct_poor": {
-    "PM25": 80.5,
-    "PM10": 17.8,
+    "PM25": 80.4,
+    "PM10": 17.9,
     "O3": 0.9,
     "CO": 0.5,
     "NO2": 0.3
   },
   "aqi_quantiles": {
-    "0.5": 111.4,
-    "0.9": 320.0,
-    "0.95": 364.5,
-    "0.99": 488.8
+    "0.5": 111.2,
+    "0.9": 320.2,
+    "0.95": 364.7,
+    "0.99": 488.7
   },
-  "spatial_corr_by_distance": {
-    "same city": 0.901,
-    "<50": 0.845,
-    "50-100": 0.751,
+  "spatial_corr_daily_pm25_by_distance": {
+    "same city": 0.775,
+    "<50": 0.868,
+    "50-100": 0.756,
     "100-250": 0.661,
-    "250-500": 0.593,
-    "500-1000": 0.487,
-    ">1000": 0.397
+    "250-500": 0.591,
+    "500-1000": 0.486,
+    ">1000": 0.395
   },
-  "diwali_day_plus1_ratio_median": 1.52,
+  "diwali_north_pm25_day_plus1_vs_days_m10_to_m4_median_ratio": 1.53,
   "qa_removed_by_rule": {
-    "out_of_range": 266332,
+    "out_of_range": 270702,
     "pm25_gt_pm10": 12704,
-    "spike": 42142,
-    "stuck": 873930
-  }
+    "spike": 26647,
+    "stuck": 359080
+  },
+  "qa_impact": [
+    {
+      "days": "all days",
+      "station_days": 447250,
+      "severe_with_QA": 13274,
+      "severe_without_QA": 13611,
+      "poor_plus_with_QA": 106844,
+      "poor_plus_without_QA": 108053,
+      "aqi_valid_with_QA": 445079,
+      "aqi_valid_without_QA": 447250,
+      "category_changed_pct": 0.73,
+      "spike_removed_per_station_day": 0.0396,
+      "stuck_removed_per_station_day": 0.6586,
+      "out_of_range_removed_per_station_day": 0.5635,
+      "pm25_gt_pm10_removed_per_station_day": 0.0261
+    },
+    {
+      "days": "Diwali +/-2 days",
+      "station_days": 6318,
+      "severe_with_QA": 774,
+      "severe_without_QA": 786,
+      "poor_plus_with_QA": 3104,
+      "poor_plus_without_QA": 3118,
+      "aqi_valid_with_QA": 6292,
+      "aqi_valid_without_QA": 6318,
+      "category_changed_pct": 0.64,
+      "spike_removed_per_station_day": 0.0318,
+      "stuck_removed_per_station_day": 0.6398,
+      "out_of_range_removed_per_station_day": 0.6255,
+      "pm25_gt_pm10_removed_per_station_day": 0.0399
+    }
+  ]
 }

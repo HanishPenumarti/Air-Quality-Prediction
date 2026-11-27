@@ -5,7 +5,8 @@ For each origin year Y in config.BACKTEST_YEARS: fit on target dates <= 31 Dec (
 predictions are reused). The imputer/climatology is refitted for every origin. All five models
 (raw features, regression and direct classification) use the benchmark's tuned settings and
 round counts (models/final_params.json). Those settings were chosen on 2020-2021 validation,
-so the 2019 and 2020 origins are slightly optimistic for the learned models - stated, not hidden.
+so only the 2022-23 origin is untouched: 2020 and 2021 were validation years, and the 2021 origin
+is exactly the finalist's validation fit. The earlier origins test the stability of the ranking.
 
 Outputs: reports/backtest.csv (+ 95 % block-bootstrap intervals), figure bt_01_backtest.png
 Usage  : python src/backtest.py [--jobs 4]

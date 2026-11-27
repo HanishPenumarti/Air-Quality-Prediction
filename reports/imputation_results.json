@@ -1,83 +1,579 @@
 {
+  "design": {
+    "mask_year": 2021,
+    "reference_period": "<= 2020-12-31",
+    "target_masked_fraction": 0.1,
+    "gaps": "disjoint contiguous 1-7 days on observed stretches",
+    "seeds": 3
+  },
   "reconstruction": [
     {
-      "method": "ffill (causal)",
-      "mae": 21.03182601928711,
-      "coverage": 0.9991967192322327
+      "variable": "AQI",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "masked_fraction": 0.10002368953783865,
+      "coverage": 1.0,
+      "mae_own": 32.85563943888176,
+      "mae_own_sd": 0.3859632590986703,
+      "mae_common": 30.970036705879394,
+      "mae_common_sd": 0.10326025052935278
     },
     {
-      "method": "linear interp (uses future)",
-      "mae": 16.60651206970215,
-      "coverage": 0.9954339830042701
+      "variable": "AQI",
+      "method": "ffill <= 3 days",
+      "masked_fraction": 0.10002368953783865,
+      "coverage": 0.6484744642877595,
+      "mae_own": 34.520486195882164,
+      "mae_own_sd": 1.5226653773127747,
+      "mae_common": 37.00831731160482,
+      "mae_common_sd": 1.6160962538709798
     },
     {
-      "method": "station-month climatology",
-      "mae": 22.25445556640625,
-      "coverage": 0.9998308882594175
+      "variable": "AQI",
+      "method": "linear interpolation (uses future, offline)",
+      "masked_fraction": 0.10002368953783865,
+      "coverage": 0.9988875923630914,
+      "mae_own": 30.362234751383465,
+      "mae_own_sd": 0.527176871300419,
+      "mae_common": 31.39882469177246,
+      "mae_common_sd": 0.9623543722256083
     },
     {
+      "variable": "AQI",
       "method": "same-city neighbours",
-      "mae": 16.475490726482597,
-      "coverage": 0.5645795459349765
+      "masked_fraction": 0.10002368953783865,
+      "coverage": 0.5758449205350382,
+      "mae_own": 31.315021692521764,
+      "mae_own_sd": 0.5485528465950527,
+      "mae_common": 30.970036705879394,
+      "mae_common_sd": 0.10326025052935278
     },
     {
-      "method": "hybrid: neighbour>ffill>clim",
-      "mae": 16.34394590434594,
-      "coverage": 1.0
+      "variable": "AQI",
+      "method": "station-month climatology (<= 2020)",
+      "masked_fraction": 0.10002368953783865,
+      "coverage": 1.0,
+      "mae_own": 47.890471183823166,
+      "mae_own_sd": 0.32183442350155195,
+      "mae_common": 52.38125278519345,
+      "mae_common_sd": 0.6461533665731622
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "masked_fraction": 0.10001011906769657,
+      "coverage": 1.0,
+      "mae_own": 16.822547361151077,
+      "mae_own_sd": 0.9968880881159023,
+      "mae_common": 16.600596341833384,
+      "mae_common_sd": 1.3851681979978745
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "ffill <= 3 days",
+      "masked_fraction": 0.10001011906769657,
+      "coverage": 0.6510401304143114,
+      "mae_own": 18.80241521199544,
+      "mae_own_sd": 0.9739964255752915,
+      "mae_common": 21.43582280476888,
+      "mae_common_sd": 1.2326532405804218
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "linear interpolation (uses future, offline)",
+      "masked_fraction": 0.10001011906769657,
+      "coverage": 0.9994378358909697,
+      "mae_own": 16.381572087605793,
+      "mae_own_sd": 0.3892919229171903,
+      "mae_common": 18.149213790893555,
+      "mae_common_sd": 0.8924242400210267
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "same-city neighbours",
+      "masked_fraction": 0.10001011906769657,
+      "coverage": 0.5825370317578481,
+      "mae_own": 16.623210987801283,
+      "mae_own_sd": 1.4699771574987608,
+      "mae_common": 16.600596341833384,
+      "mae_common_sd": 1.3851681979978745
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "station-month climatology (<= 2020)",
+      "masked_fraction": 0.10001011906769657,
+      "coverage": 1.0,
+      "mae_own": 25.452021808799078,
+      "mae_own_sd": 0.7035958455685817,
+      "mae_common": 29.54064452570785,
+      "mae_common_sd": 0.7717253792321479
     }
   ],
-  "downstream": [
+  "reconstruction_by_gap": [
     {
-      "strategy": "native",
-      "val_mae": 24.32330894470215,
-      "val_f1_poor": 0.8461331441293763
+      "variable": "AQI",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 1,
+      "mae": 28.997364999864917
     },
     {
-      "strategy": "median",
-      "val_mae": 24.44184684753418,
-      "val_f1_poor": 0.8444108761329305
+      "variable": "AQI",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 2,
+      "mae": 29.820175583361955
     },
     {
-      "strategy": "ffill",
-      "val_mae": 24.50013542175293,
-      "val_f1_poor": 0.8437332553948074
+      "variable": "AQI",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 3,
+      "mae": 31.851018283671213
     },
     {
-      "strategy": "clim",
-      "val_mae": 24.462486267089844,
-      "val_f1_poor": 0.8459699453551912
+      "variable": "AQI",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 4,
+      "mae": 32.53558667728
     },
     {
-      "strategy": "ffill_clim",
-      "val_mae": 24.411182403564453,
-      "val_f1_poor": 0.8442556930511825
+      "variable": "AQI",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 5,
+      "mae": 33.135976551155686
+    },
+    {
+      "variable": "AQI",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 6,
+      "mae": 34.46201654899636
+    },
+    {
+      "variable": "AQI",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 7,
+      "mae": 33.65942684860156
+    },
+    {
+      "variable": "AQI",
+      "method": "ffill <= 3 days",
+      "gap": 1,
+      "mae": 27.240576426188152
+    },
+    {
+      "variable": "AQI",
+      "method": "ffill <= 3 days",
+      "gap": 2,
+      "mae": 32.11663691202799
+    },
+    {
+      "variable": "AQI",
+      "method": "ffill <= 3 days",
+      "gap": 3,
+      "mae": 35.7575569152832
+    },
+    {
+      "variable": "AQI",
+      "method": "ffill <= 3 days",
+      "gap": 4,
+      "mae": 35.272684733072914
+    },
+    {
+      "variable": "AQI",
+      "method": "ffill <= 3 days",
+      "gap": 5,
+      "mae": 35.41313807169596
+    },
+    {
+      "variable": "AQI",
+      "method": "ffill <= 3 days",
+      "gap": 6,
+      "mae": 35.02565892537435
+    },
+    {
+      "variable": "AQI",
+      "method": "ffill <= 3 days",
+      "gap": 7,
+      "mae": 36.26676559448242
+    },
+    {
+      "variable": "AQI",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 1,
+      "mae": 20.9510498046875
+    },
+    {
+      "variable": "AQI",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 2,
+      "mae": 24.38368034362793
+    },
+    {
+      "variable": "AQI",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 3,
+      "mae": 28.225632349650066
+    },
+    {
+      "variable": "AQI",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 4,
+      "mae": 28.7056884765625
+    },
+    {
+      "variable": "AQI",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 5,
+      "mae": 30.05551274617513
+    },
+    {
+      "variable": "AQI",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 6,
+      "mae": 32.601243336995445
+    },
+    {
+      "variable": "AQI",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 7,
+      "mae": 34.945814768473305
+    },
+    {
+      "variable": "AQI",
+      "method": "same-city neighbours",
+      "gap": 1,
+      "mae": 32.430453479972115
+    },
+    {
+      "variable": "AQI",
+      "method": "same-city neighbours",
+      "gap": 2,
+      "mae": 30.001427273228632
+    },
+    {
+      "variable": "AQI",
+      "method": "same-city neighbours",
+      "gap": 3,
+      "mae": 30.264174503870763
+    },
+    {
+      "variable": "AQI",
+      "method": "same-city neighbours",
+      "gap": 4,
+      "mae": 30.50086134022435
+    },
+    {
+      "variable": "AQI",
+      "method": "same-city neighbours",
+      "gap": 5,
+      "mae": 30.521222511808503
+    },
+    {
+      "variable": "AQI",
+      "method": "same-city neighbours",
+      "gap": 6,
+      "mae": 31.05144495571926
+    },
+    {
+      "variable": "AQI",
+      "method": "same-city neighbours",
+      "gap": 7,
+      "mae": 33.41632311117122
+    },
+    {
+      "variable": "AQI",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 1,
+      "mae": 49.138477729065976
+    },
+    {
+      "variable": "AQI",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 2,
+      "mae": 47.166992277328774
+    },
+    {
+      "variable": "AQI",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 3,
+      "mae": 47.59000125948225
+    },
+    {
+      "variable": "AQI",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 4,
+      "mae": 47.01333766136609
+    },
+    {
+      "variable": "AQI",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 5,
+      "mae": 48.06548862382093
+    },
+    {
+      "variable": "AQI",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 6,
+      "mae": 48.49036881158454
+    },
+    {
+      "variable": "AQI",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 7,
+      "mae": 47.921606347140674
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 1,
+      "mae": 14.986431193004998
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 2,
+      "mae": 15.607129824856377
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 3,
+      "mae": 15.870699781391266
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 4,
+      "mae": 18.228381541162122
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 5,
+      "mae": 17.12924484874215
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 6,
+      "mae": 16.533045059779223
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "DEPLOYED hybrid: neighbour > ffill<=3 > climatology",
+      "gap": 7,
+      "mae": 17.33760469373141
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "ffill <= 3 days",
+      "gap": 1,
+      "mae": 13.504945119222006
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "ffill <= 3 days",
+      "gap": 2,
+      "mae": 17.419636408487957
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "ffill <= 3 days",
+      "gap": 3,
+      "mae": 18.134581247965496
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "ffill <= 3 days",
+      "gap": 4,
+      "mae": 20.465836842854817
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "ffill <= 3 days",
+      "gap": 5,
+      "mae": 21.623743057250977
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "ffill <= 3 days",
+      "gap": 6,
+      "mae": 19.98956807454427
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "ffill <= 3 days",
+      "gap": 7,
+      "mae": 17.341786066691082
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 1,
+      "mae": 10.500881512959799
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 2,
+      "mae": 13.068554242451986
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 3,
+      "mae": 14.139845212300619
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 4,
+      "mae": 16.62735366821289
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 5,
+      "mae": 18.92256228129069
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 6,
+      "mae": 17.33883285522461
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "linear interpolation (uses future, offline)",
+      "gap": 7,
+      "mae": 17.21299425760905
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "same-city neighbours",
+      "gap": 1,
+      "mae": 17.440623968562527
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "same-city neighbours",
+      "gap": 2,
+      "mae": 16.41706739621373
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "same-city neighbours",
+      "gap": 3,
+      "mae": 16.32329817406097
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "same-city neighbours",
+      "gap": 4,
+      "mae": 18.211927651255973
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "same-city neighbours",
+      "gap": 5,
+      "mae": 16.516229414797206
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "same-city neighbours",
+      "gap": 6,
+      "mae": 14.951935877211355
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "same-city neighbours",
+      "gap": 7,
+      "mae": 17.218196241459488
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 1,
+      "mae": 25.39105816687274
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 2,
+      "mae": 24.780946861266447
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 3,
+      "mae": 24.70721454572592
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 4,
+      "mae": 26.602913196350045
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 5,
+      "mae": 25.839365118715758
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 6,
+      "mae": 25.59228905374022
+    },
+    {
+      "variable": "PM25_mean",
+      "method": "station-month climatology (<= 2020)",
+      "gap": 7,
+      "mae": 24.984820065560246
     }
   ],
-  "downstream_after_daily_hybrid": [
+  "downstream_history": [
     {
-      "strategy": "native",
-      "val_mae": 24.48944854736328,
-      "val_f1_poor": 0.8447512054237952
+      "history_fill": "none",
+      "residual": "clim",
+      "val_mae": 24.399951934814453,
+      "val_f1_poor": 0.8449638883466719
     },
     {
-      "strategy": "median",
-      "val_mae": 24.42694664001465,
-      "val_f1_poor": 0.8450621513164334
+      "history_fill": "ffill",
+      "residual": "clim",
+      "val_mae": 24.313522338867188,
+      "val_f1_poor": 0.8451020607481199
     },
     {
-      "strategy": "ffill",
-      "val_mae": 24.516399383544922,
-      "val_f1_poor": 0.8449239631898845
+      "history_fill": "neighbour",
+      "residual": "clim",
+      "val_mae": 24.37761878967285,
+      "val_f1_poor": 0.8439901441779903
     },
     {
-      "strategy": "clim",
-      "val_mae": 24.432697296142578,
-      "val_f1_poor": 0.8451938136256852
+      "history_fill": "hybrid",
+      "residual": "clim",
+      "val_mae": 24.344409942626953,
+      "val_f1_poor": 0.8453391898487067
+    }
+  ],
+  "downstream_residual": [
+    {
+      "history_fill": "hybrid",
+      "residual": "native",
+      "val_mae": 24.353849411010742,
+      "val_f1_poor": 0.8454634146341463
     },
     {
-      "strategy": "ffill_clim",
-      "val_mae": 24.4982967376709,
-      "val_f1_poor": 0.8441046001519497
+      "history_fill": "hybrid",
+      "residual": "median",
+      "val_mae": 24.250791549682617,
+      "val_f1_poor": 0.8462775287468329
+    },
+    {
+      "history_fill": "hybrid",
+      "residual": "clim",
+      "val_mae": 24.344409942626953,
+      "val_f1_poor": 0.8453391898487067
     }
   ]
 }

@@ -1,0 +1,3 @@
+days,station_days,severe_with_QA,severe_without_QA,poor_plus_with_QA,poor_plus_without_QA,aqi_valid_with_QA,aqi_valid_without_QA,category_changed_pct,spike_removed_per_station_day,stuck_removed_per_station_day,out_of_range_removed_per_station_day,pm25_gt_pm10_removed_per_station_day
+all days,447250,13274,13611,106844,108053,445079,447250,0.73,0.0396,0.6586,0.5635,0.0261
+Diwali +/-2 days,6318,774,786,3104,3118,6292,6318,0.64,0.0318,0.6398,0.6255,0.0399
